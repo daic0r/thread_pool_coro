@@ -26,8 +26,8 @@ class thread_pool {
       struct promise_type;
       using handle_t = std::coroutine_handle<promise_type>;
       struct promise_type {
-         queue_t m_dQueue;
-         std::atomic<bool> m_bSuspended{};
+         queue_t queue_;
+         std::atomic<bool> bSuspended_{};
 
          auto get_return_object() noexcept {
             return task_queue{ handle_t::from_promise(*this) };
@@ -48,8 +48,8 @@ class thread_pool {
       }
       task_queue(const task_queue&) = delete;
       task_queue& operator=(const task_queue&) = delete;
-      constexpr task_queue(task_queue&& rhs) : m_coro{ std::exchange(rhs.m_coro, nullptr) } {}
-      constexpr task_queue& operator=(task_queue&& rhs) { 
+      constexpr task_queue(task_queue&& rhs) noexcept : m_coro{ std::exchange(rhs.m_coro, nullptr) } {}
+      constexpr task_queue& operator=(task_queue&& rhs) noexcept { 
          m_coro = std::exchange(rhs.m_coro, nullptr);
          return *this;
       }
@@ -64,11 +64,11 @@ class thread_pool {
       }
 
       constexpr auto& queue() noexcept {
-         return m_coro.promise().m_dQueue;
+         return m_coro.promise().queue_;
       }
 
       constexpr bool suspended() const noexcept {
-         return m_coro.promise().m_bSuspended.load(std::memory_order_acquire);
+         return m_coro.promise().bSuspended_.load(std::memory_order_acquire);
       }
    };
 
@@ -127,7 +127,7 @@ private:
 
       constexpr void await_suspend(std::coroutine_handle<>) {
          //std::cout << "await_suspend on " << idx_ << "\n";
-         pool_.m_vTaskQueues.at(idx_).m_coro.promise().m_bSuspended.store(true, std::memory_order_release);
+         pool_.m_vTaskQueues.at(idx_).m_coro.promise().bSuspended_.store(true, std::memory_order_release);
       }
 
       auto await_resume() noexcept { 
@@ -141,7 +141,7 @@ private:
             while (nCount++ < pool_.m_nNumQueues && !(task = pool_.try_pop(idx_)) )
                idx_ = (idx_ + 1) % pool_.m_nNumQueues;
          }
-         pool_.m_vTaskQueues.at(idx_).m_coro.promise().m_bSuspended.store(false, std::memory_order_release);
+         pool_.m_vTaskQueues.at(idx_).m_coro.promise().bSuspended_.store(false, std::memory_order_release);
          return task;
       }
    };
