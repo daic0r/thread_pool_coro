@@ -14,6 +14,7 @@
 #include <optional>
 #include <coroutine>
 #include <type_traits>
+#include <utility>
 
 class thread_pool {
    friend struct fetch_task;
