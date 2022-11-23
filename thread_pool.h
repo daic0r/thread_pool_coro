@@ -15,6 +15,7 @@
 #include <coroutine>
 #include <type_traits>
 #include <utility>
+#include <cassert>
 
 class thread_pool {
    friend struct fetch_task;
@@ -24,59 +25,92 @@ class thread_pool {
    using queues_t = std::vector<queue_t>;
 
    struct task_queue {
+      thread_pool* pool_;
+      std::size_t idx_;
+      queue_t queue_;
+
+      task_queue(thread_pool* p, std::size_t i) : pool_{p}, idx_{i} {}
+   };
+
+   class [[nodiscard]] coro {
+   public:
       struct promise_type;
       using handle_t = std::coroutine_handle<promise_type>;
       struct promise_type {
-         queue_t queue_;
-         std::atomic<bool> bSuspended_{};
-
          auto get_return_object() noexcept {
-            return task_queue{ handle_t::from_promise(*this) };
+            return coro{ handle_t::from_promise(*this) };
          }
 
-         constexpr std::suspend_always initial_suspend() noexcept { return {}; }
+         constexpr std::suspend_never initial_suspend() noexcept { return {}; }
          constexpr std::suspend_always final_suspend() noexcept { return {}; }
          void unhandled_exception() { std::terminate(); }
          constexpr void return_void() noexcept {}
+         auto await_transform(task_queue& queue) noexcept {
+            struct awaiter {
+               task_queue& queue_;
+
+               bool await_ready() const noexcept { 
+                  //std::cout << "await_ready on " << idx_ << "\n";
+                  return queue_.pool_->m_flag.test();
+               }
+
+               bool await_suspend(std::coroutine_handle<> coro) {
+                  //std::cout << "await_suspend on " << queue_.idx_ << "\n";
+                  queue_.pool_->m_flag.wait(false, std::memory_order_acquire);
+                  if (not queue_.pool_->m_bDone.load(std::memory_order_acquire))
+                     queue_.pool_->m_flag.clear();
+                  return false;
+               }
+
+               auto await_resume() noexcept { 
+                  //std::cout << "await_resume on " << queue_.idx_ << "\n";
+                  std::size_t nCount{};
+                  queue_.idx_ %= queue_.pool_->m_nNumQueues;
+                  auto task = queue_.pool_->try_pop(queue_.idx_);
+                  if (!task) {
+                     queue_.idx_ = (queue_.idx_ + 1) % queue_.pool_->m_nNumQueues;
+                     while (nCount++ < queue_.pool_->m_nNumQueues && !(task = queue_.pool_->try_pop(queue_.idx_)) )
+                        queue_.idx_ = (queue_.idx_ + 1) % queue_.pool_->m_nNumQueues;
+                  }
+                  return task;
+               }
+            };
+            return awaiter{ queue };
+         }
+ 
       };
 
+   private:
       handle_t m_coro;
 
    public:
-      task_queue() = default;
-      constexpr task_queue(handle_t coro) : m_coro{ coro } {
-         //std::cout << "task_queue: constructed at " << this << "\n";
-      }
-      task_queue(const task_queue&) = delete;
-      task_queue& operator=(const task_queue&) = delete;
-      constexpr task_queue(task_queue&& rhs) noexcept : m_coro{ std::exchange(rhs.m_coro, nullptr) } {}
-      constexpr task_queue& operator=(task_queue&& rhs) noexcept { 
+      coro() = default;
+      constexpr coro(handle_t coro) : m_coro{ coro } {}
+      coro(const coro&) = delete;
+      coro& operator=(const coro&) = delete;
+      constexpr coro(coro&& rhs) noexcept : m_coro{ std::exchange(rhs.m_coro, nullptr) } {}
+      constexpr coro& operator=(coro&& rhs) noexcept { 
          m_coro = std::exchange(rhs.m_coro, nullptr);
          return *this;
       }
-      constexpr ~task_queue() {
+      constexpr ~coro() {
          if (m_coro)
             m_coro.destroy();
       }
 
-      constexpr void operator()() const noexcept {
+      void operator()() const noexcept {
          //std::cout << "Resuming\n";
          m_coro.resume();
       }
 
-      constexpr auto& queue() noexcept {
-         return m_coro.promise().queue_;
-      }
-
-      constexpr bool suspended() const noexcept {
-         return m_coro.promise().bSuspended_.load(std::memory_order_acquire);
-      }
    };
 
    std::size_t m_nNumThreads{};
    std::size_t m_nNumQueues{};
    std::vector<std::thread> m_vThreads;
-   std::vector<task_queue> m_vTaskQueues;
+   std::deque<task_queue> m_vTaskQueues;
+   std::atomic_flag m_flag = ATOMIC_FLAG_INIT;
+   std::atomic<bool> m_bDone{};
 
 public:
    thread_pool(std::size_t numThreads = 0);
@@ -117,35 +151,6 @@ public:
    std::optional<task_t> try_pop(std::size_t nIdx);
 
 private:
-   struct fetch_task {
-      thread_pool& pool_;
-      std::size_t idx_;
-
-      constexpr bool await_ready() const noexcept { 
-         //std::cout << "await_ready on " << idx_ << "\n";
-         return false;
-      }
-
-      constexpr void await_suspend(std::coroutine_handle<>) {
-         //std::cout << "await_suspend on " << idx_ << "\n";
-         pool_.m_vTaskQueues.at(idx_).m_coro.promise().bSuspended_.store(true, std::memory_order_release);
-      }
-
-      auto await_resume() noexcept { 
-         std::cout << "await_resume on " << idx_ << "\n";
-
-         std::size_t nCount{};
-         idx_ %= pool_.m_nNumQueues;
-         auto task = pool_.try_pop(idx_);
-         if (!task) {
-            idx_ = (idx_ + 1) % pool_.m_nNumQueues;
-            while (nCount++ < pool_.m_nNumQueues && !(task = pool_.try_pop(idx_)) )
-               idx_ = (idx_ + 1) % pool_.m_nNumQueues;
-         }
-         pool_.m_vTaskQueues.at(idx_).m_coro.promise().bSuspended_.store(false, std::memory_order_release);
-         return task;
-      }
-   };
 
    template<typename Task>
    void queue(Task&& task) {
@@ -153,21 +158,14 @@ private:
       bool bDone{};
       while (!bDone) {
          auto& task_queue = m_vTaskQueues.at(nIdx);
-         auto& slot = task_queue.queue();
+         auto& slot = m_vTaskQueues.at(nIdx).queue_;
          auto pQueue = slot.load(std::memory_order_acquire);
          if (pQueue) {
             if (slot.compare_exchange_strong(pQueue, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed)) {
                pQueue->emplace_front(std::forward<Task>(task));
                slot.store(pQueue, std::memory_order_release);
-               std::size_t i{nIdx};
-               while (true) {
-                  auto& coro = m_vTaskQueues.at((nIdx+i) % m_nNumQueues);
-                  if (coro.suspended()) {
-                     coro();
-                     break;
-                  }
-                  ++i;
-               }
+               m_flag.test_and_set(std::memory_order_release);
+               m_flag.notify_all();
                bDone = true;
             }
          }
@@ -175,7 +173,7 @@ private:
       }
    }
 
-   task_queue run_tasks(std::size_t nQueueIdx);
+   coro run_tasks(std::size_t nQueueIdx);
 };
 
 
