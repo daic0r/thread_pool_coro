@@ -1,4 +1,5 @@
 #include <iostream>
+#include <vector>
 #include "thread_pool.h"
 
 thread_pool::task<unsigned long long> add_async(thread_pool& pool) {
@@ -12,12 +13,17 @@ thread_pool::task<unsigned long long> add_async(thread_pool& pool) {
 
 int main() {
     thread_pool pool;
+	
+	std::vector<thread_pool::task<unsigned long long>> vFutures;
 
     for (auto i = 0; i < 3; ++i) {
       
-         auto nSum = add_async(pool);
-         std::cout << "Result is " << nSum.get() << "\n";
+         vFutures.emplace_back(add_async(pool));
     }
+	
+	for (auto& fut : vFutures) {
+		std::cout << "Result is " << fut.get() << "\n";
+	}
 
     return 0;
 }

@@ -38,7 +38,7 @@ public:
       task(handle_t coro) : m_coro{ coro } {}
       task(const task&) = delete;
       task& operator=(const task&) = delete;
-      task(task&& rhs) noexcept : m_coro{ std::exchange(rhs.m_coro), nullptr } {}
+      task(task&& rhs) noexcept : m_coro{ std::exchange(rhs.m_coro, nullptr) } {}
       task& operator=(task&& rhs) noexcept { 
          task copy{ std::move(rhs) };
          copy.swap(*this);
