@@ -22,6 +22,7 @@ thread_pool::thread_pool(std::size_t numThreads) :
             nIdx = i % m_nNumQueues;
             std::size_t nCount{};
             std::optional<std::coroutine_handle<>> task;
+
             {
                std::unique_lock guard{ m_readyMtx }; 
                m_ready.wait(guard, std::bind(&thread_pool::data_ready, this)); 
@@ -59,8 +60,6 @@ std::optional<std::coroutine_handle<>> thread_pool::try_pop(std::size_t nIdx) {
    if (!pQueue->empty()) {
       ret = std::move(pQueue->back());
       pQueue->pop_back();
-      slot.store(pQueue, std::memory_order_release);
-      return ret;
    }
    slot.store(pQueue, std::memory_order_release);
    return ret;
