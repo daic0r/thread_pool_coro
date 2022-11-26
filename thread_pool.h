@@ -12,6 +12,7 @@
 #include <coroutine>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 class thread_pool {
 public:
@@ -21,12 +22,14 @@ public:
       struct promise_type;
       using handle_t = std::coroutine_handle<promise_type>;
       struct promise_type {
-         std::optional<T> m_value;
+         std::variant<std::monostate, T, std::exception_ptr> m_value;
 
          auto get_return_object() noexcept {
             return task<T>{ handle_t::from_promise(*this) };
          }
-         void unhandled_exception() { std::terminate(); }
+         void unhandled_exception() {
+            m_value = std::current_exception();
+         }
          std::suspend_never initial_suspend() const noexcept { return {}; }
          std::suspend_always final_suspend() const noexcept { return {}; }
          void return_value(T val) noexcept(std::is_nothrow_move_assignable_v<T>) { m_value = std::move(val); }
@@ -43,7 +46,7 @@ public:
          return *this;
       }
       ~task() {
-         if (m_coro)
+         if (m_coro && !holds_exception())
             m_coro.destroy();
       }
 
@@ -61,19 +64,29 @@ public:
          return m_coro;
       }
 
-      T get() noexcept(std::is_nothrow_move_constructible_v<T>) {
+      T get() {
          auto& promise = m_coro.promise();
-         while (!promise.m_value);
-         return std::move(promise.m_value.value());
+         while (!ready());
+         if (holds_exception()) {
+            std::rethrow_exception(std::get<std::exception_ptr>(promise.m_value));
+         }
+         return std::move(std::get<T>(promise.m_value));
       }
 
       auto ready() const noexcept {
-         return m_coro.promise().m_value.has_value();
+         return m_coro.promise().m_value.index() != 0;
+      }
+
+      auto holds_exception() const noexcept {
+         return std::holds_alternative<std::exception_ptr>(m_coro.promise().m_value);
+      }
+
+      auto holds_value() const noexcept {
+         return std::holds_alternative<T>(m_coro.promise().m_value);
       }
 
    private:
       handle_t m_coro;
-
    };
 
 private:
