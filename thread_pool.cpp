@@ -1,10 +1,5 @@
 #include "thread_pool.h"
-#include <atomic>
-#include <optional>
-#include <iostream>
-#include <algorithm>
 #include <functional>
-#include <cassert>
 
 thread_pool::thread_pool(std::size_t numThreads) :
    m_nNumThreads{ numThreads == 0 ? std::thread::hardware_concurrency() : numThreads },
@@ -19,9 +14,6 @@ thread_pool::thread_pool(std::size_t numThreads) :
       m_vThreads.emplace_back([this, i] () {
          std::size_t nIdx{};
          while (!m_bDone.load(std::memory_order_acquire)) {
-            nIdx = i % m_nNumQueues;
-            std::optional<std::coroutine_handle<>> task;
-
             {
                std::unique_lock guard{ m_readyMtx }; 
                m_ready.wait(guard, std::bind(&thread_pool::data_ready, this)); 
@@ -30,7 +22,8 @@ thread_pool::thread_pool(std::size_t numThreads) :
                   break;
                }
             }
-            task = try_pop(nIdx);
+            nIdx = i % m_nNumQueues;
+            auto task = try_pop(nIdx);
             if (!task) {
                nIdx = (nIdx + 1) % m_nNumQueues;
                std::size_t nCount{};
@@ -63,10 +56,6 @@ std::optional<std::coroutine_handle<>> thread_pool::try_pop(std::size_t nIdx) no
    }
    slot.store(pQueue, std::memory_order_release);
    return ret;
-}
-
-bool thread_pool::data_ready() const noexcept {
-   return m_nReady.load(std::memory_order_acquire) > 0 || m_bDone.load(std::memory_order_acquire);
 }
 
 thread_pool::~thread_pool() {
