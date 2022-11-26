@@ -20,7 +20,6 @@ thread_pool::thread_pool(std::size_t numThreads) :
          std::size_t nIdx{};
          while (!m_bDone.load(std::memory_order_acquire)) {
             nIdx = i % m_nNumQueues;
-            std::size_t nCount{};
             std::optional<std::coroutine_handle<>> task;
 
             {
@@ -34,6 +33,7 @@ thread_pool::thread_pool(std::size_t numThreads) :
             task = try_pop(nIdx);
             if (!task) {
                nIdx = (nIdx + 1) % m_nNumQueues;
+               std::size_t nCount{};
                while (data_ready() && nCount++ < m_nNumQueues && !(task = try_pop(nIdx)) )
                   nIdx = (nIdx + 1) % m_nNumQueues;
             }
@@ -47,7 +47,7 @@ thread_pool::thread_pool(std::size_t numThreads) :
    }
 }
 
-std::optional<std::coroutine_handle<>> thread_pool::try_pop(std::size_t nIdx) {
+std::optional<std::coroutine_handle<>> thread_pool::try_pop(std::size_t nIdx) noexcept {
    std::optional<std::coroutine_handle<>> ret;
 
    auto& slot = m_vQueues.at(nIdx);

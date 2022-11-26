@@ -107,6 +107,9 @@ public:
    thread_pool& operator=(thread_pool&&) = delete;
    ~thread_pool();
 
+   std::optional<std::coroutine_handle<>> try_pop(std::size_t nIdx) noexcept;
+   bool data_ready() const noexcept;
+
    auto operator co_await() {
       struct awaiter {
          thread_pool& m_pool;
@@ -135,8 +138,6 @@ public:
       return awaiter{ *this };
    }
 
-   std::optional<std::coroutine_handle<>> try_pop(std::size_t nIdx);
-   bool data_ready() const noexcept;
 };
 
 
