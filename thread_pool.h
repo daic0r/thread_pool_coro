@@ -15,6 +15,8 @@
 #include <variant>
 
 class thread_pool {
+   friend struct awaiter;
+
 public:
    template<typename T>
    class [[nodiscard]] task {
@@ -90,14 +92,12 @@ public:
    };
 
 private:
-   std::size_t m_nNumThreads{};
-   std::size_t m_nNumQueues{};
-   std::vector<std::thread> m_vThreads;
-   std::vector<std::atomic<std::deque<std::coroutine_handle<>>*>> m_vQueues;
-   std::atomic<bool> m_bDone{ false };
-   std::mutex m_readyMtx;
-   std::condition_variable m_ready;
-   std::atomic<std::size_t> m_nReady{};
+   std::coroutine_handle<> do_pop_task(std::deque<std::coroutine_handle<>>*) noexcept;
+   void do_emplace_task(std::coroutine_handle<>, std::deque<std::coroutine_handle<>>*);
+   std::optional<std::coroutine_handle<>> try_pop(std::size_t nIdx) noexcept;
+   constexpr bool data_ready() const noexcept {
+      return m_nReady.load(std::memory_order_acquire) > 0 || m_bDone.load(std::memory_order_acquire);
+   }
 
 public:
    thread_pool(std::size_t numThreads = 0);
@@ -106,12 +106,6 @@ public:
    thread_pool(thread_pool&&) = delete;
    thread_pool& operator=(thread_pool&&) = delete;
    ~thread_pool();
-
-   std::optional<std::coroutine_handle<>> try_pop(std::size_t nIdx) noexcept;
-
-   constexpr bool data_ready() const noexcept {
-      return m_nReady.load(std::memory_order_acquire) > 0 || m_bDone.load(std::memory_order_acquire);
-   }
 
    constexpr auto operator co_await() noexcept {
       struct awaiter {
@@ -126,9 +120,8 @@ public:
                auto pQueue = slot.load(std::memory_order_acquire);
                if (pQueue) {
                   if (slot.compare_exchange_strong(pQueue, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed)) {
-                     pQueue->emplace_front(coro);
+                     m_pool.do_emplace_task(coro, pQueue);
                      slot.store(pQueue, std::memory_order_release);
-                     m_pool.m_nReady.fetch_add(1, std::memory_order_release);
                      m_pool.m_ready.notify_all();
                      bDone = true;
                   }
@@ -141,6 +134,15 @@ public:
       return awaiter{ *this };
    }
 
+private:
+   std::size_t m_nNumThreads{};
+   std::size_t m_nNumQueues{};
+   std::vector<std::thread> m_vThreads;
+   std::vector<std::atomic<std::deque<std::coroutine_handle<>>*>> m_vQueues;
+   std::atomic<bool> m_bDone{ false };
+   std::mutex m_readyMtx;
+   std::condition_variable m_ready;
+   std::atomic<std::size_t> m_nReady{};
 };
 
 

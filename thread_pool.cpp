@@ -30,9 +30,8 @@ thread_pool::thread_pool(std::size_t numThreads) :
                while (data_ready() && nCount++ < m_nNumQueues && !(task = try_pop(nIdx)) )
                   nIdx = (nIdx + 1) % m_nNumQueues;
             }
-            // Check if loop above finished because of valid situation
+            // Run the task
             if (task) {
-               m_nReady.fetch_sub(1, std::memory_order_release);
                (*task).resume();
             }
          }
@@ -40,20 +39,35 @@ thread_pool::thread_pool(std::size_t numThreads) :
    }
 }
 
+std::coroutine_handle<> thread_pool::do_pop_task(std::deque<std::coroutine_handle<>>* pQueue) noexcept {
+   auto ret = std::move(pQueue->back());
+   pQueue->pop_back();
+   m_nReady.fetch_sub(1, std::memory_order_release);
+   return ret;
+}
+
+void thread_pool::do_emplace_task(std::coroutine_handle<> task, std::deque<std::coroutine_handle<>>* pQueue) {
+   pQueue->emplace_front(task);
+   m_nReady.fetch_add(1, std::memory_order_release);
+}
+
 std::optional<std::coroutine_handle<>> thread_pool::try_pop(std::size_t nIdx) noexcept {
    std::optional<std::coroutine_handle<>> ret;
 
    auto& slot = m_vQueues.at(nIdx);
+
    auto pQueue = slot.load(std::memory_order_acquire);
    if (!pQueue) return ret;
-   if (pQueue->empty()) return ret;
 
    if (!slot.compare_exchange_strong(pQueue, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed)) return ret;
 
-   if (!pQueue->empty()) {
-      ret = std::move(pQueue->back());
-      pQueue->pop_back();
+   if (pQueue->empty()) {
+      slot.store(pQueue, std::memory_order_release);
+      return ret;
    }
+
+   ret = do_pop_task(pQueue);
+
    slot.store(pQueue, std::memory_order_release);
    return ret;
 }
